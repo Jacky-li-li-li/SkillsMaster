@@ -3,9 +3,10 @@ import path from "path";
 import os from "os";
 import type { LoadedSkill, CreateSkillRequest, UpdateSkillRequest } from "./types";
 import { parseSkillMd, serializeSkillMd } from "./parser";
+import { assertValidSkillSlug, isValidSkillSlug } from "./slug";
 
 // 存储路径: ~/.agents/skills/ (与 npx skills add 安装路径一致)
-const SKILLS_BASE_DIR = path.join(os.homedir(), ".agents", "skills");
+const SKILLS_BASE_DIR = path.resolve(os.homedir(), ".agents", "skills");
 
 function ensureSkillsDir(): void {
   if (!fs.existsSync(SKILLS_BASE_DIR)) {
@@ -14,7 +15,14 @@ function ensureSkillsDir(): void {
 }
 
 function getSkillDir(slug: string): string {
-  return path.join(SKILLS_BASE_DIR, slug);
+  assertValidSkillSlug(slug);
+  const skillDir = path.resolve(SKILLS_BASE_DIR, slug);
+
+  if (!skillDir.startsWith(`${SKILLS_BASE_DIR}${path.sep}`)) {
+    throw new Error("Invalid skill path");
+  }
+
+  return skillDir;
 }
 
 function getSkillMdPath(slug: string): string {
@@ -22,6 +30,10 @@ function getSkillMdPath(slug: string): string {
 }
 
 export function skillExists(slug: string): boolean {
+  if (!isValidSkillSlug(slug)) {
+    return false;
+  }
+
   return fs.existsSync(getSkillMdPath(slug));
 }
 
@@ -31,6 +43,7 @@ export function listSkillSlugs(): string[] {
     const entries = fs.readdirSync(SKILLS_BASE_DIR, { withFileTypes: true });
     return entries
       .filter((entry) => entry.isDirectory())
+      .filter((entry) => isValidSkillSlug(entry.name))
       .filter((entry) => fs.existsSync(path.join(SKILLS_BASE_DIR, entry.name, "SKILL.md")))
       .map((entry) => entry.name);
   } catch {
@@ -39,6 +52,10 @@ export function listSkillSlugs(): string[] {
 }
 
 export function loadSkill(slug: string): LoadedSkill | null {
+  if (!isValidSkillSlug(slug)) {
+    return null;
+  }
+
   const skillMdPath = getSkillMdPath(slug);
   if (!fs.existsSync(skillMdPath)) {
     return null;
@@ -94,6 +111,7 @@ export function loadAllSkills(): LoadedSkill[] {
 
 export function createSkill(request: CreateSkillRequest): LoadedSkill {
   ensureSkillsDir();
+  assertValidSkillSlug(request.slug);
 
   const skillDir = getSkillDir(request.slug);
   if (fs.existsSync(skillDir)) {
@@ -123,6 +141,7 @@ export function createSkill(request: CreateSkillRequest): LoadedSkill {
 }
 
 export function updateSkill(slug: string, request: UpdateSkillRequest): LoadedSkill {
+  assertValidSkillSlug(slug);
   const existing = loadSkill(slug);
   if (!existing) {
     throw new Error(`Skill "${slug}" not found`);
@@ -151,6 +170,10 @@ export function updateSkill(slug: string, request: UpdateSkillRequest): LoadedSk
 }
 
 export function deleteSkill(slug: string): boolean {
+  if (!isValidSkillSlug(slug)) {
+    return false;
+  }
+
   const skillDir = getSkillDir(slug);
   if (!fs.existsSync(skillDir)) {
     return false;

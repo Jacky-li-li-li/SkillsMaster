@@ -3,6 +3,7 @@ import type { Tool, MessageParam, ToolResultBlockParam } from "@anthropic-ai/sdk
 import type { AgentEvent, TokenUsage } from "./event-types";
 import type { LoadedSkill } from "../skills/types";
 import { DEFAULT_BASE_URL } from "../constants";
+import { evaluateMathExpression } from "./safe-math";
 
 export { DEFAULT_BASE_URL };
 
@@ -93,10 +94,13 @@ async function executeTool(
       case "calculator": {
         const expression = toolInput.expression as string;
         try {
-          const result = Function(`"use strict"; return (${expression})`)();
+          const result = evaluateMathExpression(expression);
           return { result: `Result: ${result}`, isError: false };
-        } catch {
-          return { result: "Error: Invalid expression", isError: true };
+        } catch (error) {
+          return {
+            result: `Error: ${error instanceof Error ? error.message : "Invalid expression"}`,
+            isError: true,
+          };
         }
       }
       case "get_current_time": {

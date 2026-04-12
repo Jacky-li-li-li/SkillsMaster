@@ -1,23 +1,26 @@
-import { exec } from "child_process";
+import { execFile } from "child_process";
 import { promisify } from "util";
-import path from "path";
-import os from "os";
-import fs from "fs";
+import { loadSkill } from "@/lib/skills/storage";
+import { isValidSkillSlug } from "@/lib/skills/slug";
 
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
 export const runtime = "nodejs";
 
-const SKILLS_BASE_DIR = path.join(os.homedir(), ".agents", "skills");
-
 export async function POST(
-  request: Request,
+  _request: Request,
   { params }: { params: Promise<{ slug: string }> }
 ) {
   const { slug } = await params;
-  const skillDir = path.join(SKILLS_BASE_DIR, slug);
+  if (!isValidSkillSlug(slug)) {
+    return new Response(JSON.stringify({ error: "Invalid skill slug" }), {
+      status: 400,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
 
-  if (!fs.existsSync(skillDir)) {
+  const skill = loadSkill(slug);
+  if (!skill) {
     return new Response(JSON.stringify({ error: "Skill not found" }), {
       status: 404,
       headers: { "Content-Type": "application/json" },
@@ -25,21 +28,20 @@ export async function POST(
   }
 
   try {
-    // 根据操作系统选择打开命令
     const platform = process.platform;
-    let command: string;
+    let opener: string;
 
     if (platform === "darwin") {
-      command = `open "${skillDir}"`;
+      opener = "open";
     } else if (platform === "win32") {
-      command = `explorer "${skillDir}"`;
+      opener = "explorer";
     } else {
-      command = `xdg-open "${skillDir}"`;
+      opener = "xdg-open";
     }
 
-    await execAsync(command);
+    await execFileAsync(opener, [skill.path]);
 
-    return new Response(JSON.stringify({ success: true, path: skillDir }), {
+    return new Response(JSON.stringify({ success: true, path: skill.path }), {
       headers: { "Content-Type": "application/json" },
     });
   } catch (error) {

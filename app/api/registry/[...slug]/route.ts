@@ -1,70 +1,84 @@
 import { NextResponse } from "next/server";
 import { createSkill, skillExists } from "@/lib/skills/storage";
-import { exec } from "child_process";
+import { parseSkillMd } from "@/lib/skills/parser";
+import { execFile } from "child_process";
 import { promisify } from "util";
 import { readFile } from "fs/promises";
-import { join } from "path";
+import { join, resolve } from "path";
 import { homedir } from "os";
 
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
 interface RouteParams {
   params: Promise<{ slug: string[] }>;
 }
 
+const GITHUB_SEGMENT_REGEX = /^[A-Za-z0-9_.-]+$/;
+const SKILL_NAME_REGEX = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+
 export async function POST(_request: Request, { params }: RouteParams) {
   const { slug } = await params;
 
-  // slug 是数组，例如 ["obra", "superpowers", "using-superpowers"]
-  // 提取最后一部分作为 skill 的本地 slug
-  const skillSlug = slug[slug.length - 1];
-  const fullPath = slug.join('/');
-
-  if (skillExists(skillSlug)) {
+  if (slug.length !== 3) {
     return NextResponse.json(
-      { error: `Skill "${skillSlug}" already exists` },
+      { error: "Invalid skill path format. Expected: owner/repo/skill-name" },
+      { status: 400 }
+    );
+  }
+
+  const [owner, repo, skillName] = slug;
+  if (
+    !GITHUB_SEGMENT_REGEX.test(owner) ||
+    !GITHUB_SEGMENT_REGEX.test(repo) ||
+    !SKILL_NAME_REGEX.test(skillName)
+  ) {
+    return NextResponse.json(
+      { error: "Invalid owner/repo/skill name format" },
+      { status: 400 }
+    );
+  }
+
+  if (skillExists(skillName)) {
+    return NextResponse.json(
+      { error: `Skill "${skillName}" already exists` },
       { status: 409 }
     );
   }
 
   try {
-    // 正确的 CLI 格式：npx skills add <github-url> --skill <skill-name>
-    // 例如：npx skills add https://github.com/obra/superpowers --skill brainstorming
-    const parts = slug;
-
-    if (parts.length !== 3) {
-      throw new Error("Invalid skill path format. Expected: owner/repo/skill-name");
-    }
-
-    const [owner, repo, skillName] = parts;
     const githubUrl = `https://github.com/${owner}/${repo}`;
-    const command = `npx skills add ${githubUrl} --skill ${skillName}`;
+    const { stdout, stderr } = await execFileAsync(
+      "npx",
+      ["skills", "add", githubUrl, "--skill", skillName],
+      {
+        cwd: process.cwd(),
+        timeout: 120_000,
+      }
+    );
 
-    console.log(`Installing skill with command: ${command}`);
-
-    const { stdout, stderr } = await execAsync(command, {
-      cwd: process.cwd(),
-    });
-
-    console.log(`Install output: ${stdout}`);
+    console.log(`Install output for ${owner}/${repo}/${skillName}: ${stdout}`);
     if (stderr) {
       console.error(`Install stderr: ${stderr}`);
     }
 
-    // 尝试从 ~/.skills 目录读取安装的 skill
-    const skillsDir = join(homedir(), '.skills', owner, repo, skillName);
-    const skillFile = join(skillsDir, 'SKILL.md');
+    const skillsDir = resolve(homedir(), ".skills", owner, repo, skillName);
+    const skillFile = join(skillsDir, "SKILL.md");
 
     console.log(`Reading skill from: ${skillFile}`);
-    const content = await readFile(skillFile, 'utf-8');
+    const rawSkillMd = await readFile(skillFile, "utf-8");
+    const parsed = parseSkillMd(rawSkillMd);
+    if (!parsed) {
+      throw new Error("Installed SKILL.md metadata is invalid");
+    }
 
-    // 创建 skill
     const skill = createSkill({
-      slug: skillSlug,
-      name: skillName,
-      description: `Installed from ${owner}/${repo}`,
-      content,
-      icon: undefined,
+      slug: skillName,
+      name: parsed.metadata.name,
+      description: parsed.metadata.description ?? `Installed from ${owner}/${repo}`,
+      content: parsed.content,
+      globs: parsed.metadata.globs,
+      alwaysAllow: parsed.metadata.alwaysAllow,
+      icon: parsed.metadata.icon,
     });
 
     return NextResponse.json({ skill, source: "registry" }, { status: 201 });

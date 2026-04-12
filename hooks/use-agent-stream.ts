@@ -192,7 +192,7 @@ export function useAgentStream(
         setIsStreaming(false);
       }
     },
-    [options.apiKey, options.baseURL, options.model, options.skillSlugs, options.files, messages]
+    [options.apiKey, options.baseURL, options.model, options.skillSlugs, options.files, messages, processStream]
   );
 
   const clearMessages = useCallback(() => {

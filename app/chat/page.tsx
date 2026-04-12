@@ -184,24 +184,6 @@ export default function ChatPage() {
         </DialogContent>
       </Dialog>
 
-      {/* Top Promotion Banner */}
-      <div className="bg-black px-4 py-2 text-white">
-        <div className="flex items-center justify-between">
-          <span className="text-sm">
-            获取 MiniMax 编程包，低成本体验 Skills 以及通用 Agents 能力
-          </span>
-          <a
-            href="https://platform.minimaxi.com/subscribe/coding-plan"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Button size="sm" variant="secondary">
-              去购买
-            </Button>
-          </a>
-        </div>
-      </div>
-
       <div className="flex flex-1 overflow-hidden">
       {/* Sidebar */}
       <div className="w-64 border-r p-4 flex flex-col gap-4">

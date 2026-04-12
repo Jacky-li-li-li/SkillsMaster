@@ -39,15 +39,22 @@ export default function SkillsPage() {
     icon: string;
   }) => {
     try {
-      await fetch("/api/skills", {
+      const res = await fetch("/api/skills", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(skill),
       });
+
+      if (!res.ok) {
+        const error = await res.json();
+        throw new Error(error.error || "创建技能失败");
+      }
+
       setIsCreating(false);
       fetchSkills();
     } catch (err) {
       console.error("Failed to create skill:", err);
+      alert(err instanceof Error ? err.message : "创建技能失败");
     }
   };
 

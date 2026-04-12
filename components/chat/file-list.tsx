@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useCallback } from "react";
-import { X, File, FileText, Image, FileCode } from "lucide-react";
+import { X, File, FileText, ImageIcon, FileCode } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 
@@ -20,7 +20,7 @@ interface FileListProps {
 
 function getFileIcon(type: string, name: string) {
   if (type.startsWith("image/")) {
-    return <Image className="h-4 w-4" />;
+    return <ImageIcon className="h-4 w-4" />;
   }
   if (
     type.includes("javascript") ||

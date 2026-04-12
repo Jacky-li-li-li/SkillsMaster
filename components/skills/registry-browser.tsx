@@ -22,11 +22,33 @@ interface RegistrySkill {
   icon?: string;
 }
 
-interface RegistryBrowserProps {
-  onInstall?: (slug: string) => Promise<void>;
+function normalizeRegistryResponse(data: unknown): RegistrySkill[] {
+  if (!data || typeof data !== "object") {
+    return [];
+  }
+
+  const payload = data as {
+    skills?: Array<{ id: string; name: string; topSource: string; installs: number; description?: string; icon?: string }>;
+    results?: Array<{ skillId: string; name: string; source: string; installs: number }>;
+  };
+
+  if (Array.isArray(payload.skills)) {
+    return payload.skills;
+  }
+
+  if (Array.isArray(payload.results)) {
+    return payload.results.map((item) => ({
+      id: item.skillId,
+      name: item.name,
+      topSource: item.source,
+      installs: item.installs,
+    }));
+  }
+
+  return [];
 }
 
-export function RegistryBrowser({ onInstall }: RegistryBrowserProps) {
+export function RegistryBrowser() {
   const [query, setQuery] = useState("");
   const [skills, setSkills] = useState<RegistrySkill[]>([]);
   const [loading, setLoading] = useState(false);
@@ -42,7 +64,7 @@ export function RegistryBrowser({ onInstall }: RegistryBrowserProps) {
         : `/api/registry`;
       const res = await fetch(url);
       const data = await res.json();
-      setSkills(data.skills || []);
+      setSkills(normalizeRegistryResponse(data));
     } catch (err) {
       console.error("Failed to fetch skills:", err);
     } finally {
