@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useRef, useEffect } from "react";
 import type { AgentEvent } from "@/lib/agent/event-types";
 
 interface ToolCall {
@@ -39,8 +39,68 @@ interface UseAgentStreamOptions {
   apiKey: string;
   baseURL?: string;
   model?: string;
-  skillSlugs?: string[];
   files?: FileInfo[];
+}
+
+const CHAT_MESSAGES_STORAGE_KEY = "skills-master-chat-messages";
+
+function isToolCallStatus(
+  value: unknown
+): value is "running" | "completed" | "error" {
+  return value === "running" || value === "completed" || value === "error";
+}
+
+function parseStoredMessages(raw: string | null): Message[] {
+  if (!raw) return [];
+
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+
+    return parsed
+      .map((item, index): Message | null => {
+        if (!item || typeof item !== "object") return null;
+        const obj = item as Record<string, unknown>;
+
+        const role = obj.role;
+        if (role !== "user" && role !== "assistant") return null;
+
+        const toolCalls = Array.isArray(obj.toolCalls)
+          ? obj.toolCalls
+              .map((tool): ToolCall | null => {
+                if (!tool || typeof tool !== "object") return null;
+                const toolObj = tool as Record<string, unknown>;
+                if (!isToolCallStatus(toolObj.status)) return null;
+                if (typeof toolObj.id !== "string" || typeof toolObj.name !== "string") {
+                  return null;
+                }
+
+                return {
+                  id: toolObj.id,
+                  name: toolObj.name,
+                  input:
+                    toolObj.input && typeof toolObj.input === "object" && !Array.isArray(toolObj.input)
+                      ? (toolObj.input as Record<string, unknown>)
+                      : {},
+                  status: toolObj.status,
+                  result: typeof toolObj.result === "string" ? toolObj.result : undefined,
+                };
+              })
+              .filter((tool): tool is ToolCall => tool !== null)
+          : undefined;
+
+        return {
+          id: typeof obj.id === "string" ? obj.id : `msg-${index}-${Date.now()}`,
+          role,
+          content: typeof obj.content === "string" ? obj.content : "",
+          timestamp: typeof obj.timestamp === "number" ? obj.timestamp : Date.now(),
+          toolCalls,
+        };
+      })
+      .filter((item): item is Message => item !== null);
+  } catch {
+    return [];
+  }
 }
 
 export function useAgentStream(
@@ -51,6 +111,36 @@ export function useAgentStream(
   const [error, setError] = useState<string | null>(null);
   const streamingContentRef = useRef("");
   const toolCallsRef = useRef<Map<string, ToolCall>>(new Map());
+  const hasLoadedPersistedMessagesRef = useRef(false);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const restored = parseStoredMessages(
+      window.localStorage.getItem(CHAT_MESSAGES_STORAGE_KEY)
+    );
+    if (restored.length > 0) {
+      setMessages(restored);
+    }
+    hasLoadedPersistedMessagesRef.current = true;
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (!hasLoadedPersistedMessagesRef.current) return;
+
+    try {
+      if (messages.length === 0) {
+        window.localStorage.removeItem(CHAT_MESSAGES_STORAGE_KEY);
+      } else {
+        window.localStorage.setItem(
+          CHAT_MESSAGES_STORAGE_KEY,
+          JSON.stringify(messages)
+        );
+      }
+    } catch {
+      // ignore storage write errors
+    }
+  }, [messages]);
 
   const processStream = useCallback(
     async (
@@ -175,7 +265,6 @@ export function useAgentStream(
             apiKey: options.apiKey,
             baseURL: options.baseURL,
             model: options.model,
-            skillSlugs: options.skillSlugs,
           }),
         });
 
@@ -192,12 +281,15 @@ export function useAgentStream(
         setIsStreaming(false);
       }
     },
-    [options.apiKey, options.baseURL, options.model, options.skillSlugs, options.files, messages, processStream]
+    [options.apiKey, options.baseURL, options.model, options.files, messages, processStream]
   );
 
   const clearMessages = useCallback(() => {
     setMessages([]);
     setError(null);
+    if (typeof window !== "undefined") {
+      window.localStorage.removeItem(CHAT_MESSAGES_STORAGE_KEY);
+    }
   }, []);
 
   return { messages, isStreaming, error, sendMessage, clearMessages };

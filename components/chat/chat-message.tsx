@@ -1,10 +1,10 @@
 "use client";
 
-import { useMemo } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { cn } from "@/lib/utils";
-import { Loader2, CheckCircle2, XCircle } from "lucide-react";
+import { Loader2, CheckCircle2, XCircle, Copy, Check } from "lucide-react";
 
 interface ToolCall {
   id: string;
@@ -35,6 +35,10 @@ interface TextBlock {
 
 type ContentBlock = ToolCallBlock | TextBlock;
 
+function hasVisibleContent(text: string): boolean {
+  return text.trim().length > 0;
+}
+
 function parseToolCallArgs(argsStr: string): Record<string, string> {
   const args: Record<string, string> = {};
   const lines = argsStr.trim().split("\n");
@@ -61,8 +65,8 @@ function parseContent(content: string): ContentBlock[] {
 
   while ((match = toolCallRegex.exec(content)) !== null) {
     if (match.index > lastIndex) {
-      const textBefore = content.slice(lastIndex, match.index).trim();
-      if (textBefore) {
+      const textBefore = content.slice(lastIndex, match.index);
+      if (hasVisibleContent(textBefore)) {
         blocks.push({ type: "text", content: textBefore });
       }
     }
@@ -78,14 +82,14 @@ function parseContent(content: string): ContentBlock[] {
   }
 
   if (lastIndex < content.length) {
-    const remaining = content.slice(lastIndex).trim();
-    if (remaining) {
+    const remaining = content.slice(lastIndex);
+    if (hasVisibleContent(remaining)) {
       blocks.push({ type: "text", content: remaining });
     }
   }
 
-  if (blocks.length === 0 && content.trim()) {
-    blocks.push({ type: "text", content: content.trim() });
+  if (blocks.length === 0 && hasVisibleContent(content)) {
+    blocks.push({ type: "text", content });
   }
 
   return blocks;
@@ -211,6 +215,38 @@ function MarkdownContent({ content }: { content: string }) {
         h3({ children }) {
           return <h3 className="text-base font-bold mb-2">{children}</h3>;
         },
+        table({ children }) {
+          return (
+            <div className="my-3 w-full overflow-x-auto">
+              <table className="w-full min-w-[420px] border-collapse text-sm">
+                {children}
+              </table>
+            </div>
+          );
+        },
+        thead({ children }) {
+          return <thead className="bg-background/60">{children}</thead>;
+        },
+        tbody({ children }) {
+          return <tbody>{children}</tbody>;
+        },
+        tr({ children }) {
+          return <tr className="border-b border-border">{children}</tr>;
+        },
+        th({ children }) {
+          return (
+            <th className="border border-border px-3 py-2 text-left font-semibold align-top">
+              {children}
+            </th>
+          );
+        },
+        td({ children }) {
+          return (
+            <td className="border border-border px-3 py-2 align-top">
+              {children}
+            </td>
+          );
+        },
       }}
     >
       {content}
@@ -220,43 +256,105 @@ function MarkdownContent({ content }: { content: string }) {
 
 export function ChatMessage({ role, content, toolCalls, isStreaming }: ChatMessageProps) {
   const blocks = useMemo(() => parseContent(content), [content]);
+  const [copied, setCopied] = useState(false);
+  const copiedTimeoutRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (copiedTimeoutRef.current) {
+        window.clearTimeout(copiedTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  const handleCopy = async () => {
+    if (!content) return;
+
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(content);
+      } else {
+        const textarea = document.createElement("textarea");
+        textarea.value = content;
+        textarea.setAttribute("readonly", "");
+        textarea.style.position = "fixed";
+        textarea.style.opacity = "0";
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand("copy");
+        document.body.removeChild(textarea);
+      }
+
+      setCopied(true);
+      if (copiedTimeoutRef.current) {
+        window.clearTimeout(copiedTimeoutRef.current);
+      }
+      copiedTimeoutRef.current = window.setTimeout(() => {
+        setCopied(false);
+      }, 1500);
+    } catch {
+      setCopied(false);
+    }
+  };
 
   return (
     <div
       className={cn(
-        "flex w-full",
+        "group/message flex w-full",
         role === "user" ? "justify-end" : "justify-start"
       )}
     >
       <div
         className={cn(
-          "max-w-[80%] rounded-lg px-4 py-2",
-          role === "user"
-            ? "bg-primary text-primary-foreground"
-            : "bg-muted"
+          "max-w-[80%] flex flex-col gap-1",
+          role === "user" ? "items-end" : "items-start"
         )}
       >
-        {/* 显示来自 hook 的真实工具调用 */}
-        {toolCalls && toolCalls.length > 0 && (
-          <div className="space-y-2 mb-2">
-            {toolCalls.map((tc) => (
-              <RealToolCallCard key={tc.id} toolCall={tc} />
-            ))}
-          </div>
-        )}
-        {/* 显示文本内容和解析的工具调用 */}
-        {blocks.map((block, index) => (
-          <div key={index}>
-            {block.type === "tool_call" ? (
-              <ToolCallCard block={block} />
-            ) : (
-              <MarkdownContent content={block.content} />
-            )}
-          </div>
-        ))}
-        {isStreaming && (
-          <span className="inline-block w-2 h-4 bg-primary/50 animate-pulse ml-1" />
-        )}
+        <div
+          className={cn(
+            "rounded-lg px-4 py-2",
+            role === "user"
+              ? "bg-primary text-primary-foreground"
+              : "bg-muted"
+          )}
+        >
+          {/* 显示来自 hook 的真实工具调用 */}
+          {toolCalls && toolCalls.length > 0 && (
+            <div className="space-y-2 mb-2">
+              {toolCalls.map((tc) => (
+                <RealToolCallCard key={tc.id} toolCall={tc} />
+              ))}
+            </div>
+          )}
+          {/* 显示文本内容和解析的工具调用 */}
+          {blocks.map((block, index) => (
+            <div key={index}>
+              {block.type === "tool_call" ? (
+                <ToolCallCard block={block} />
+              ) : (
+                <MarkdownContent content={block.content} />
+              )}
+            </div>
+          ))}
+          {isStreaming && (
+            <span className="inline-block w-2 h-4 bg-primary/50 animate-pulse ml-1" />
+          )}
+        </div>
+
+        <button
+          type="button"
+          onClick={handleCopy}
+          aria-label={copied ? "已复制消息" : "复制消息"}
+          title={copied ? "已复制" : "复制"}
+          className={cn(
+            "inline-flex h-7 w-7 items-center justify-center rounded-md transition-opacity",
+            "opacity-0 group-hover/message:opacity-100 group-focus-within/message:opacity-100",
+            "hover:bg-accent hover:text-accent-foreground",
+            copied ? "text-green-600" : "text-muted-foreground"
+          )}
+        >
+          {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+        </button>
       </div>
     </div>
   );

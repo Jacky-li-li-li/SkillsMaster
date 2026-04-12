@@ -18,60 +18,7 @@ export interface LoadedSkill {
   content: string;
   path: string;
   iconPath?: string;
-  source: "local" | "registry";
-}
-
-// Skills.sh Registry 相关类型
-export interface RegistrySkill {
-  name: string;
-  slug: string;
-  description: string;
-  author: string;
-  version: string;
-  downloads: number;
-  icon?: string;
-  tags?: string[];
-}
-
-export interface RegistrySearchResult {
-  skills: RegistrySkill[];
-  total: number;
-  page: number;
-  pageSize: number;
-}
-
-// Skills.sh API 实际返回的搜索结果类型
-export interface SkillsShSearchResultItem {
-  source: string;
-  skillId: string;
-  name: string;
-  installs: number;
-  score: number;
-}
-
-export interface SkillsShSearchResponse {
-  results: SkillsShSearchResultItem[];
-  total: number;
-}
-
-// Skills.sh API 默认列表返回的数据类型
-export interface SkillsShListItem {
-  id: string;
-  name: string;
-  installs: number;
-  topSource: string;
-}
-
-export interface SkillsShListResponse {
-  skills: SkillsShListItem[];
-}
-
-// 统一的显示用接口
-export interface SkillDisplayItem {
-  id: string;
-  name: string;
-  installs: number;
-  source: string;
+  source: "local";
 }
 
 // Skill 创建/更新请求

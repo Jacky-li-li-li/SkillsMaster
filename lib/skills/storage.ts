@@ -5,58 +5,78 @@ import type { LoadedSkill, CreateSkillRequest, UpdateSkillRequest } from "./type
 import { parseSkillMd, serializeSkillMd } from "./parser";
 import { assertValidSkillSlug, isValidSkillSlug } from "./slug";
 
-// 存储路径: ~/.agents/skills/ (与 npx skills add 安装路径一致)
-const SKILLS_BASE_DIR = path.resolve(os.homedir(), ".agents", "skills");
+const PROJECT_SKILLS_BASE_DIR = path.resolve(process.cwd(), ".claude", "skills");
+const USER_SKILLS_BASE_DIR = path.resolve(os.homedir(), ".claude", "skills");
 
-function ensureSkillsDir(): void {
-  if (!fs.existsSync(SKILLS_BASE_DIR)) {
-    fs.mkdirSync(SKILLS_BASE_DIR, { recursive: true });
-  }
+type SkillScope = "project" | "user";
+
+interface SkillLocation {
+  scope: SkillScope;
+  baseDir: string;
 }
 
-function getSkillDir(slug: string): string {
-  assertValidSkillSlug(slug);
-  const skillDir = path.resolve(SKILLS_BASE_DIR, slug);
+const SKILL_LOCATIONS: SkillLocation[] = [
+  { scope: "project", baseDir: PROJECT_SKILLS_BASE_DIR },
+  { scope: "user", baseDir: USER_SKILLS_BASE_DIR },
+];
 
-  if (!skillDir.startsWith(`${SKILLS_BASE_DIR}${path.sep}`)) {
+function ensureSkillsDir(scope: SkillScope = "project"): string {
+  const baseDir =
+    scope === "project" ? PROJECT_SKILLS_BASE_DIR : USER_SKILLS_BASE_DIR;
+
+  if (!fs.existsSync(baseDir)) {
+    fs.mkdirSync(baseDir, { recursive: true });
+  }
+
+  return baseDir;
+}
+
+function getSkillDir(baseDir: string, slug: string): string {
+  assertValidSkillSlug(slug);
+  const skillDir = path.resolve(baseDir, slug);
+
+  if (skillDir !== baseDir && !skillDir.startsWith(`${baseDir}${path.sep}`)) {
     throw new Error("Invalid skill path");
   }
 
   return skillDir;
 }
 
-function getSkillMdPath(slug: string): string {
-  return path.join(getSkillDir(slug), "SKILL.md");
+function getSkillMdPath(baseDir: string, slug: string): string {
+  return path.join(getSkillDir(baseDir, slug), "SKILL.md");
 }
 
-export function skillExists(slug: string): boolean {
-  if (!isValidSkillSlug(slug)) {
-    return false;
+function findSkillLocation(slug: string): SkillLocation | null {
+  for (const location of SKILL_LOCATIONS) {
+    if (fs.existsSync(getSkillMdPath(location.baseDir, slug))) {
+      return location;
+    }
+  }
+  return null;
+}
+
+function listSkillSlugsFromBase(baseDir: string): string[] {
+  if (!fs.existsSync(baseDir)) {
+    return [];
   }
 
-  return fs.existsSync(getSkillMdPath(slug));
-}
-
-export function listSkillSlugs(): string[] {
-  ensureSkillsDir();
   try {
-    const entries = fs.readdirSync(SKILLS_BASE_DIR, { withFileTypes: true });
+    const entries = fs.readdirSync(baseDir, { withFileTypes: true });
     return entries
       .filter((entry) => entry.isDirectory())
       .filter((entry) => isValidSkillSlug(entry.name))
-      .filter((entry) => fs.existsSync(path.join(SKILLS_BASE_DIR, entry.name, "SKILL.md")))
+      .filter((entry) => fs.existsSync(path.join(baseDir, entry.name, "SKILL.md")))
       .map((entry) => entry.name);
   } catch {
     return [];
   }
 }
 
-export function loadSkill(slug: string): LoadedSkill | null {
-  if (!isValidSkillSlug(slug)) {
-    return null;
-  }
-
-  const skillMdPath = getSkillMdPath(slug);
+function loadSkillFromLocation(
+  slug: string,
+  location: SkillLocation
+): LoadedSkill | null {
+  const skillMdPath = getSkillMdPath(location.baseDir, slug);
   if (!fs.existsSync(skillMdPath)) {
     return null;
   }
@@ -68,10 +88,9 @@ export function loadSkill(slug: string): LoadedSkill | null {
       return null;
     }
 
-    const skillDir = getSkillDir(slug);
+    const skillDir = getSkillDir(location.baseDir, slug);
     let iconPath: string | undefined;
 
-    // 查找图标文件
     const iconExtensions = [".png", ".jpg", ".jpeg", ".svg", ".webp"];
     for (const ext of iconExtensions) {
       const iconFile = path.join(skillDir, `icon${ext}`);
@@ -95,6 +114,39 @@ export function loadSkill(slug: string): LoadedSkill | null {
   }
 }
 
+export function skillExists(slug: string): boolean {
+  if (!isValidSkillSlug(slug)) {
+    return false;
+  }
+
+  return findSkillLocation(slug) !== null;
+}
+
+export function listSkillSlugs(): string[] {
+  const slugs = new Set<string>();
+
+  for (const location of SKILL_LOCATIONS) {
+    for (const slug of listSkillSlugsFromBase(location.baseDir)) {
+      slugs.add(slug);
+    }
+  }
+
+  return Array.from(slugs).sort();
+}
+
+export function loadSkill(slug: string): LoadedSkill | null {
+  if (!isValidSkillSlug(slug)) {
+    return null;
+  }
+
+  const location = findSkillLocation(slug);
+  if (!location) {
+    return null;
+  }
+
+  return loadSkillFromLocation(slug, location);
+}
+
 export function loadAllSkills(): LoadedSkill[] {
   const slugs = listSkillSlugs();
   const skills: LoadedSkill[] = [];
@@ -110,14 +162,14 @@ export function loadAllSkills(): LoadedSkill[] {
 }
 
 export function createSkill(request: CreateSkillRequest): LoadedSkill {
-  ensureSkillsDir();
+  const baseDir = ensureSkillsDir("project");
   assertValidSkillSlug(request.slug);
 
-  const skillDir = getSkillDir(request.slug);
-  if (fs.existsSync(skillDir)) {
+  if (skillExists(request.slug)) {
     throw new Error(`Skill "${request.slug}" already exists`);
   }
 
+  const skillDir = getSkillDir(baseDir, request.slug);
   fs.mkdirSync(skillDir, { recursive: true });
 
   const metadata = {
@@ -129,7 +181,7 @@ export function createSkill(request: CreateSkillRequest): LoadedSkill {
   };
 
   const skillMdContent = serializeSkillMd(metadata, request.content);
-  fs.writeFileSync(getSkillMdPath(request.slug), skillMdContent, "utf-8");
+  fs.writeFileSync(getSkillMdPath(baseDir, request.slug), skillMdContent, "utf-8");
 
   return {
     slug: request.slug,
@@ -157,7 +209,7 @@ export function updateSkill(slug: string, request: UpdateSkillRequest): LoadedSk
 
   const content = request.content ?? existing.content;
   const skillMdContent = serializeSkillMd(metadata, content);
-  fs.writeFileSync(getSkillMdPath(slug), skillMdContent, "utf-8");
+  fs.writeFileSync(path.join(existing.path, "SKILL.md"), skillMdContent, "utf-8");
 
   return {
     slug,
@@ -174,11 +226,12 @@ export function deleteSkill(slug: string): boolean {
     return false;
   }
 
-  const skillDir = getSkillDir(slug);
-  if (!fs.existsSync(skillDir)) {
+  const location = findSkillLocation(slug);
+  if (!location) {
     return false;
   }
 
+  const skillDir = getSkillDir(location.baseDir, slug);
   fs.rmSync(skillDir, { recursive: true, force: true });
   return true;
 }

@@ -4,9 +4,7 @@ import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { SkillList } from "@/components/skills/skill-list";
 import { SkillEditor } from "@/components/skills/skill-editor";
-import { RegistryBrowser } from "@/components/skills/registry-browser";
 import { Button } from "@/components/ui/button";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import type { LoadedSkill } from "@/lib/skills/types";
 
 export default function SkillsPage() {
@@ -80,33 +78,22 @@ export default function SkillsPage() {
         </Button>
       </div>
 
-      <Tabs defaultValue="local" className="space-y-4">
-        <TabsList>
-          <TabsTrigger value="local">我的技能</TabsTrigger>
-          <TabsTrigger value="registry">浏览注册表</TabsTrigger>
-        </TabsList>
+      <div className="space-y-4">
+        <div className="flex justify-end">
+          <Button onClick={() => setIsCreating(true)} disabled={isCreating}>
+            创建技能
+          </Button>
+        </div>
 
-        <TabsContent value="local" className="space-y-4">
-          <div className="flex justify-end">
-            <Button onClick={() => setIsCreating(true)} disabled={isCreating}>
-              创建技能
-            </Button>
-          </div>
+        {isCreating && (
+          <SkillEditor
+            onSave={handleCreate}
+            onCancel={() => setIsCreating(false)}
+          />
+        )}
 
-          {isCreating && (
-            <SkillEditor
-              onSave={handleCreate}
-              onCancel={() => setIsCreating(false)}
-            />
-          )}
-
-          <SkillList skills={skills} onDelete={handleDelete} />
-        </TabsContent>
-
-        <TabsContent value="registry">
-          <RegistryBrowser />
-        </TabsContent>
-      </Tabs>
+        <SkillList skills={skills} onDelete={handleDelete} />
+      </div>
     </div>
   );
 }
