@@ -5,10 +5,10 @@ import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
 
 const ITEMS = [
-  { href: "/plaza", label: "Skill广场" },
-  { href: "/sessions", label: "会话" },
-  { href: "/models", label: "模型" },
-  { href: "/me", label: "我的" },
+  { href: "/plaza", label: "Discover" },
+  { href: "/sessions", label: "Chats" },
+  { href: "/models", label: "Models" },
+  { href: "/me", label: "Me" },
 ];
 
 export function MainNav() {
@@ -33,6 +33,12 @@ export function MainNav() {
           </Link>
         );
       })}
+      <button
+        type="button"
+        className="px-3 py-2 rounded-md text-sm border bg-background hover:bg-muted"
+      >
+        Unknown
+      </button>
     </nav>
   );
 }

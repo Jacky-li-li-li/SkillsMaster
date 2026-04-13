@@ -1,10 +1,12 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { memo, useCallback, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import { ChevronLeft, ChevronRight, Plus } from "lucide-react";
 import { toast } from "sonner";
 import { MainNav } from "@/components/app/main-nav";
 import { ChatContainer } from "@/components/chat/chat-container";
+import { Button } from "@/components/ui/button";
 import { apiFetch } from "@/lib/client/api";
 import { getActiveModelConfig, loadModelConfigs } from "@/lib/client/model-config";
 import type { AgentEvent } from "@/lib/agent/event-types";
@@ -100,6 +102,86 @@ function normalizeToolCalls(value: unknown): ChatUiMessage["toolCalls"] {
   return items.length > 0 ? items : undefined;
 }
 
+function buildSessionPreview(content: string): string | null {
+  const trimmed = content.trim();
+  return trimmed ? trimmed.slice(0, 120) : null;
+}
+
+interface SessionSidebarProps {
+  groups: SessionGroup[];
+  loadingGroups: boolean;
+  selectedSessionId: string | null;
+  creatingSkillId: string | null;
+  onCreateSession: (skillId: string) => void;
+  onSelectSession: (sessionId: string) => void;
+}
+
+const SessionSidebar = memo(function SessionSidebar({
+  groups,
+  loadingGroups,
+  selectedSessionId,
+  creatingSkillId,
+  onCreateSession,
+  onSelectSession,
+}: SessionSidebarProps) {
+  return (
+    <div className="border rounded-lg min-h-0 overflow-hidden flex flex-col">
+      <div className="flex-1 overflow-auto p-3 space-y-3">
+        {loadingGroups ? (
+          <div className="text-sm text-muted-foreground">加载中...</div>
+        ) : groups.length === 0 ? (
+          <div className="text-sm text-muted-foreground">暂无会话，请从广场发起对话</div>
+        ) : (
+          groups.map((group) => (
+            <details key={group.skill.id} open className="group rounded-md border p-2">
+              <summary className="list-none cursor-pointer rounded-md bg-muted/60 px-2 py-2 text-sm font-medium [&::-webkit-details-marker]:hidden">
+                <div className="flex items-center gap-1.5">
+                  <ChevronRight className="size-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-90" />
+                  <span className="text-[11px] uppercase tracking-wide text-muted-foreground">Skill</span>
+                  <span className="truncate">
+                    {group.skill.icon ? `${group.skill.icon} ` : ""}
+                    {group.skill.name}
+                  </span>
+                  {group.skill.status !== "published" && (
+                    <span className="ml-auto text-xs text-muted-foreground">已下架</span>
+                  )}
+                </div>
+              </summary>
+              <div className="mt-2 ml-2 border-l pl-2 space-y-1">
+                <button
+                  type="button"
+                  className="h-10 w-full rounded-md border border-dashed px-2 text-sm font-medium text-left flex items-center gap-1.5 hover:bg-muted disabled:opacity-50 disabled:cursor-not-allowed"
+                  onClick={() => onCreateSession(group.skill.id)}
+                  disabled={creatingSkillId !== null || group.skill.status !== "published"}
+                >
+                  <Plus className="size-4 shrink-0" />
+                  {creatingSkillId === group.skill.id ? "新建中..." : "新建会话"}
+                </button>
+
+                {group.sessions.map((session) => (
+                  <button
+                    key={session.id}
+                    type="button"
+                    className={`h-10 w-full text-left rounded-md px-2 text-sm border transition ${
+                      selectedSessionId === session.id
+                        ? "bg-primary text-primary-foreground border-primary"
+                        : "border-border/80 hover:bg-muted"
+                    }`}
+                    onClick={() => onSelectSession(session.id)}
+                    title={session.title}
+                  >
+                    <span className="font-medium truncate block">{session.title}</span>
+                  </button>
+                ))}
+              </div>
+            </details>
+          ))
+        )}
+      </div>
+    </div>
+  );
+});
+
 export default function SessionsPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -111,15 +193,21 @@ export default function SessionsPage() {
   const [loadingGroups, setLoadingGroups] = useState(true);
   const [loadingMessages, setLoadingMessages] = useState(false);
   const [isStreaming, setIsStreaming] = useState(false);
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+  const [creatingSkillId, setCreatingSkillId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [activeModelConfig, setActiveModelConfig] = useState<ReturnType<typeof getActiveModelConfig>>(null);
 
-  const activeModelConfig = useMemo(() => {
-    const configs = loadModelConfigs();
-    return getActiveModelConfig(configs);
+  useEffect(() => {
+    setActiveModelConfig(getActiveModelConfig(loadModelConfigs()));
   }, []);
 
-  const fetchGroups = useCallback(async () => {
-    setLoadingGroups(true);
+  const fetchGroups = useCallback(async (options?: { silent?: boolean }) => {
+    const silent = options?.silent ?? false;
+    if (!silent) {
+      setLoadingGroups(true);
+    }
+
     try {
       const res = await apiFetch("/api/sessions");
       const data = await res.json();
@@ -130,13 +218,20 @@ export default function SessionsPage() {
     } catch (err) {
       setError(err instanceof Error ? err.message : "加载会话列表失败");
     } finally {
-      setLoadingGroups(false);
+      if (!silent) {
+        setLoadingGroups(false);
+      }
     }
   }, []);
 
-  const fetchMessages = useCallback(async (sessionId: string) => {
-    setLoadingMessages(true);
-    setError(null);
+  const fetchMessages = useCallback(
+    async (sessionId: string, options?: { silent?: boolean }) => {
+      const silent = options?.silent ?? false;
+      if (!silent) {
+        setLoadingMessages(true);
+        setError(null);
+      }
+
     try {
       const res = await apiFetch(`/api/sessions/${sessionId}/messages`);
       const data = await res.json();
@@ -159,9 +254,13 @@ export default function SessionsPage() {
     } catch (err) {
       setError(err instanceof Error ? err.message : "加载消息失败");
     } finally {
-      setLoadingMessages(false);
+      if (!silent) {
+        setLoadingMessages(false);
+      }
     }
-  }, []);
+    },
+    []
+  );
 
   useEffect(() => {
     fetchGroups();
@@ -176,11 +275,81 @@ export default function SessionsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams]);
 
-  const handleSelectSession = async (sessionId: string) => {
-    setSelectedSessionId(sessionId);
-    await fetchMessages(sessionId);
-    router.replace(`/sessions?sessionId=${sessionId}`);
-  };
+  const handleSelectSession = useCallback(
+    async (sessionId: string) => {
+      setSelectedSessionId(sessionId);
+      await fetchMessages(sessionId);
+      router.replace(`/sessions?sessionId=${sessionId}`);
+    },
+    [fetchMessages, router]
+  );
+
+  const handleCreateSession = useCallback(
+    async (skillId: string) => {
+      setCreatingSkillId(skillId);
+      setError(null);
+
+      try {
+        const res = await apiFetch("/api/sessions", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ skillId }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          throw new Error(data.error || "创建会话失败");
+        }
+
+        const sessionId = data.session?.id as string | undefined;
+        await fetchGroups();
+
+        if (sessionId) {
+          setSelectedSessionId(sessionId);
+          await fetchMessages(sessionId);
+          router.replace(`/sessions?sessionId=${sessionId}`);
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "创建会话失败";
+        setError(message);
+        toast.error(message);
+      } finally {
+        setCreatingSkillId(null);
+      }
+    },
+    [fetchGroups, fetchMessages, router]
+  );
+
+  const optimisticSyncCurrentSession = useCallback(
+    (sessionId: string, userContent: string, assistantContent: string) => {
+      const nowIso = new Date().toISOString();
+      const preview = buildSessionPreview(assistantContent) ?? buildSessionPreview(userContent);
+
+      setGroups((prev) => {
+        let changed = false;
+        const nextGroups = prev.map((group) => {
+          const sessionIndex = group.sessions.findIndex((session) => session.id === sessionId);
+          if (sessionIndex === -1) return group;
+
+          changed = true;
+          const nextSessions = [...group.sessions];
+          const target = nextSessions[sessionIndex];
+          const updatedSession: SessionItem = {
+            ...target,
+            updatedAt: nowIso,
+            lastMessagePreview: preview,
+            lastMessageAt: nowIso,
+          };
+
+          nextSessions.splice(sessionIndex, 1);
+          nextSessions.unshift(updatedSession);
+          return { ...group, sessions: nextSessions };
+        });
+
+        return changed ? nextGroups : prev;
+      });
+    },
+    []
+  );
 
   const sendMessage = async (message: string) => {
     if (!selectedSessionId) {
@@ -195,6 +364,7 @@ export default function SessionsPage() {
 
     setError(null);
     setIsStreaming(true);
+    const currentSessionId = selectedSessionId;
 
     const userId = crypto.randomUUID();
     const assistantId = crypto.randomUUID();
@@ -217,13 +387,71 @@ export default function SessionsPage() {
     >();
 
     let streamContent = "";
+    let hasPendingAssistantUpdate = false;
+    let frameId: number | null = null;
+
+    const commitAssistantUpdate = () => {
+      const nextToolCalls = Array.from(toolCalls.values());
+      setMessages((prev) =>
+        prev.map((item) =>
+          item.id === assistantId
+            ? {
+                ...item,
+                content: streamContent,
+                toolCalls: nextToolCalls.length > 0 ? nextToolCalls : undefined,
+              }
+            : item
+        )
+      );
+    };
+
+    const queueAssistantUpdate = () => {
+      hasPendingAssistantUpdate = true;
+      if (frameId !== null) return;
+      frameId = window.requestAnimationFrame(() => {
+        frameId = null;
+        if (!hasPendingAssistantUpdate) return;
+        hasPendingAssistantUpdate = false;
+        commitAssistantUpdate();
+      });
+    };
+
+    const flushAssistantUpdate = () => {
+      if (frameId !== null) {
+        window.cancelAnimationFrame(frameId);
+        frameId = null;
+      }
+      if (!hasPendingAssistantUpdate) return;
+      hasPendingAssistantUpdate = false;
+      commitAssistantUpdate();
+    };
+
+    const settleRunningToolCalls = (
+      status: "completed" | "error",
+      fallbackResult: string
+    ) => {
+      let changed = false;
+      for (const [toolUseId, toolCall] of toolCalls.entries()) {
+        if (toolCall.status === "running") {
+          toolCalls.set(toolUseId, {
+            ...toolCall,
+            status,
+            result: toolCall.result ?? fallbackResult,
+          });
+          changed = true;
+        }
+      }
+      if (changed) {
+        queueAssistantUpdate();
+      }
+    };
 
     try {
       const response = await apiFetch("/api/agent", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          sessionId: selectedSessionId,
+          sessionId: currentSessionId,
           message,
           modelConfig: {
             model: activeModelConfig.model,
@@ -257,27 +485,19 @@ export default function SessionsPage() {
             const event = JSON.parse(line.slice(6)) as AgentEvent;
             if (event.type === "text_delta") {
               streamContent += event.delta;
-              setMessages((prev) =>
-                prev.map((item) =>
-                  item.id === assistantId
-                    ? { ...item, content: streamContent }
-                    : item
-                )
-              );
+              queueAssistantUpdate();
             } else if (event.type === "tool_start") {
+              const existing = toolCalls.get(event.toolUseId);
               toolCalls.set(event.toolUseId, {
                 id: event.toolUseId,
                 name: event.toolName,
                 input: event.toolInput,
-                status: "running",
+                status: existing?.status === "error" || existing?.status === "completed"
+                  ? existing.status
+                  : "running",
+                result: existing?.result,
               });
-              setMessages((prev) =>
-                prev.map((item) =>
-                  item.id === assistantId
-                    ? { ...item, toolCalls: Array.from(toolCalls.values()) }
-                    : item
-                )
-              );
+              queueAssistantUpdate();
             } else if (event.type === "tool_result") {
               const existing = toolCalls.get(event.toolUseId);
               if (existing) {
@@ -286,16 +506,13 @@ export default function SessionsPage() {
                   status: event.isError ? "error" : "completed",
                   result: event.result,
                 });
-                setMessages((prev) =>
-                  prev.map((item) =>
-                    item.id === assistantId
-                      ? { ...item, toolCalls: Array.from(toolCalls.values()) }
-                      : item
-                  )
-                );
+                queueAssistantUpdate();
               }
+            } else if (event.type === "complete") {
+              settleRunningToolCalls("completed", "Tool execution finished.");
             } else if (event.type === "error") {
               setError(event.error);
+              settleRunningToolCalls("error", event.error);
             }
           } catch {
             // ignore parse errors
@@ -305,16 +522,18 @@ export default function SessionsPage() {
     } catch (err) {
       setError(err instanceof Error ? err.message : "发送消息失败");
     } finally {
+      flushAssistantUpdate();
       setIsStreaming(false);
-      await fetchGroups();
-      await fetchMessages(selectedSessionId);
+      optimisticSyncCurrentSession(currentSessionId, message, streamContent);
+      void fetchGroups({ silent: true });
     }
   };
 
+  const sidebarToggleLabel = isSidebarCollapsed ? "展开会话侧边栏" : "折叠会话侧边栏";
+
   return (
-    <div className="h-screen p-6 flex flex-col gap-4 overflow-hidden">
-      <div className="flex items-center justify-between gap-4 flex-wrap">
-        <h1 className="text-2xl font-bold">会话</h1>
+    <div className="h-dvh p-6 flex flex-col gap-4 overflow-hidden">
+      <div className="flex justify-center">
         <MainNav />
       </div>
 
@@ -324,78 +543,82 @@ export default function SessionsPage() {
         </div>
       )}
 
-      <div className="flex-1 min-h-0 grid grid-cols-[320px_1fr] gap-4 overflow-hidden">
-        <div className="border rounded-lg p-3 overflow-auto space-y-3">
-          {loadingGroups ? (
-            <div className="text-sm text-muted-foreground">加载中...</div>
-          ) : groups.length === 0 ? (
-            <div className="text-sm text-muted-foreground">暂无会话，请从广场发起对话</div>
-          ) : (
-            groups.map((group) => (
-              <details key={group.skill.id} open className="rounded-md border p-2">
-                <summary className="cursor-pointer text-sm font-medium">
-                  {group.skill.icon ? `${group.skill.icon} ` : ""}
-                  {group.skill.name}
-                  {group.skill.status !== "published" ? " (已下架)" : ""}
-                </summary>
-                <div className="mt-2 space-y-1">
-                  {group.sessions.map((session) => (
-                    <button
-                      key={session.id}
-                      type="button"
-                      className={`w-full text-left rounded px-2 py-1 text-sm border ${
-                        selectedSessionId === session.id
-                          ? "bg-primary text-primary-foreground border-primary"
-                          : "hover:bg-muted"
-                      }`}
-                      onClick={() => handleSelectSession(session.id)}
-                    >
-                      <div className="font-medium truncate">{session.title}</div>
-                      {session.lastMessagePreview && (
-                        <div className="text-xs opacity-80 truncate">{session.lastMessagePreview}</div>
-                      )}
-                    </button>
-                  ))}
-                </div>
-              </details>
-            ))
-          )}
-        </div>
+      <div
+        className={`flex-1 min-h-0 min-w-0 grid overflow-visible transition-[grid-template-columns] ${
+          isSidebarCollapsed ? "grid-cols-1" : "grid-cols-[320px_minmax(0,1fr)] gap-4"
+        }`}
+      >
+        {!isSidebarCollapsed && (
+          <SessionSidebar
+            groups={groups}
+            loadingGroups={loadingGroups}
+            selectedSessionId={selectedSessionId}
+            creatingSkillId={creatingSkillId}
+            onCreateSession={handleCreateSession}
+            onSelectSession={handleSelectSession}
+          />
+        )}
 
-        <div className="border rounded-lg overflow-hidden min-h-0">
-          {selectedSessionId ? (
-            loadingMessages ? (
-              <div className="p-4 text-sm text-muted-foreground">加载消息中...</div>
-            ) : (
-              <div className="h-full flex flex-col min-h-0">
-                {sessionDetail && (
-                  <div className="border-b p-3 text-sm">
-                    <div className="font-medium">
-                      {sessionDetail.skill.icon ? `${sessionDetail.skill.icon} ` : ""}
-                      {sessionDetail.title}
-                    </div>
-                    <div className="text-xs text-muted-foreground">
-                      Skill 状态: {sessionDetail.skill.status}
-                    </div>
-                  </div>
-                )}
-                {error && (
-                  <div className="mx-4 mt-2 bg-destructive/10 text-destructive p-2 text-sm rounded">
-                    {error}
-                  </div>
-                )}
-                <div className="flex-1 min-h-0">
-                  <ChatContainer
-                    messages={messages}
-                    isStreaming={isStreaming}
-                    onSend={sendMessage}
-                  />
-                </div>
+        <div className="relative min-h-0 min-w-0 overflow-visible">
+          <Button
+            variant="outline"
+            type="button"
+            onClick={() => setIsSidebarCollapsed((prev) => !prev)}
+            className="absolute left-0 top-1/2 z-20 hidden h-10 w-7 -translate-x-1/2 -translate-y-1/2 rounded-md bg-background px-0 shadow-sm hover:bg-muted md:inline-flex"
+            aria-label={sidebarToggleLabel}
+          >
+            {isSidebarCollapsed ? <ChevronRight className="size-4" /> : <ChevronLeft className="size-4" />}
+          </Button>
+          <div className="border rounded-lg min-h-0 min-w-0 h-full overflow-hidden">
+            <div className="h-full min-w-0 overflow-hidden rounded-lg flex flex-col min-h-0">
+              <div className="md:hidden border-b px-3 py-2 flex justify-end shrink-0">
+                <Button
+                  variant="outline"
+                  type="button"
+                  onClick={() => setIsSidebarCollapsed((prev) => !prev)}
+                  className="h-8 w-8 rounded-md bg-background p-0 shadow-sm hover:bg-muted"
+                  aria-label={sidebarToggleLabel}
+                >
+                  {isSidebarCollapsed ? <ChevronRight className="size-4" /> : <ChevronLeft className="size-4" />}
+                </Button>
               </div>
-            )
-          ) : (
-            <div className="p-4 text-sm text-muted-foreground">请从左侧选择会话</div>
-          )}
+              {selectedSessionId ? (
+                loadingMessages ? (
+                  <div className="p-4 text-sm text-muted-foreground">加载消息中...</div>
+                ) : (
+                  <div className="h-full min-w-0 flex flex-col min-h-0">
+                    {sessionDetail && (
+                      <div className="border-b p-3 text-sm">
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="font-medium truncate">
+                            {sessionDetail.skill.icon ? `${sessionDetail.skill.icon} ` : ""}
+                            {sessionDetail.title}
+                          </div>
+                          <div className="text-xs text-muted-foreground shrink-0">
+                            Skill 状态: {sessionDetail.skill.status}
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                    {error && (
+                      <div className="mx-4 mt-2 bg-destructive/10 text-destructive p-2 text-sm rounded">
+                        {error}
+                      </div>
+                    )}
+                    <div className="flex-1 min-h-0 min-w-0">
+                      <ChatContainer
+                        messages={messages}
+                        isStreaming={isStreaming}
+                        onSend={sendMessage}
+                      />
+                    </div>
+                  </div>
+                )
+              ) : (
+                <div className="p-4 text-sm text-muted-foreground">请从左侧选择会话</div>
+              )}
+            </div>
+          </div>
         </div>
       </div>
     </div>

@@ -14,7 +14,9 @@ export function createSSEStream(): {
   };
 } {
   const encoder = new TextEncoder();
-  let controller: ReadableStreamDefaultController<Uint8Array>;
+  let controller: ReadableStreamDefaultController<Uint8Array> | null = null;
+  let isClosed = false;
+  let hasErrored = false;
 
   const stream = new ReadableStream<Uint8Array>({
     start(c) {
@@ -26,14 +28,31 @@ export function createSSEStream(): {
     stream,
     writer: {
       write(event: AgentEvent) {
+        if (!controller || isClosed || hasErrored) return;
         const encoded = encoder.encode(encodeSSE(event));
-        controller.enqueue(encoded);
+        try {
+          controller.enqueue(encoded);
+        } catch {
+          isClosed = true;
+        }
       },
       close() {
-        controller.close();
+        if (!controller || isClosed || hasErrored) return;
+        isClosed = true;
+        try {
+          controller.close();
+        } catch {
+          // no-op: stream already closed
+        }
       },
       error(err: Error) {
-        controller.error(err);
+        if (!controller || isClosed || hasErrored) return;
+        hasErrored = true;
+        try {
+          controller.error(err);
+        } catch {
+          // no-op: stream already errored/closed
+        }
       },
     },
   };

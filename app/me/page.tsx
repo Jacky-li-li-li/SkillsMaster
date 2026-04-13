@@ -227,8 +227,7 @@ export default function MePage() {
 
   return (
     <div className="min-h-screen p-6 space-y-6">
-      <div className="flex items-center justify-between gap-4 flex-wrap">
-        <h1 className="text-2xl font-bold">我的</h1>
+      <div className="flex justify-center">
         <MainNav />
       </div>
 
@@ -297,6 +296,9 @@ export default function MePage() {
               </div>
               <div className="md:col-span-2 space-y-2">
                 <Label>内容 (Markdown)</Label>
+                <p className="text-xs text-muted-foreground">
+                  提示：Skill 中“我/我的”等第一人称会被解释为助手设定，不代表对话用户身份。
+                </p>
                 <Textarea
                   className="min-h-[160px]"
                   value={createDraft.contentMarkdown}
@@ -388,6 +390,9 @@ export default function MePage() {
                         </div>
                         <div className="md:col-span-2 space-y-2">
                           <Label>内容 (Markdown)</Label>
+                          <p className="text-xs text-muted-foreground">
+                            提示：Skill 中“我/我的”等第一人称会被解释为助手设定，不代表对话用户身份。
+                          </p>
                           <Textarea
                             className="min-h-[140px]"
                             value={editingDraft.contentMarkdown}

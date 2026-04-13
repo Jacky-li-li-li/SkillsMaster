@@ -31,7 +31,6 @@ export function ChatInput({ onSend, disabled }: ChatInputProps) {
         value={input}
         onChange={(e) => setInput(e.target.value)}
         onKeyDown={handleKeyDown}
-        placeholder="可以直接提问，Claude 会自动发现并调用匹配的 Skills..."
         disabled={disabled}
         className="min-h-[60px] resize-none flex-1"
       />

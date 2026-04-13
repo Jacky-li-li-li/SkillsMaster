@@ -25,7 +25,7 @@ else
   RUNTIME_DB_URL="${DB_URL}?pgbouncer=true"
 fi
 
-echo "Local app URL: http://localhost:${PORT:-3000}"
+echo "Local dev URL: http://localhost:${PORT:-3000}"
 echo "Runtime DATABASE_URL: $RUNTIME_DB_URL"
 
-DATABASE_URL="$RUNTIME_DB_URL" PORT="${PORT:-3000}" pnpm start
+DATABASE_URL="$RUNTIME_DB_URL" PORT="${PORT:-3000}" pnpm dev

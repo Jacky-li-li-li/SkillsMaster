@@ -120,6 +120,14 @@ function buildSkillSystemPromptAppend(skill: {
     "You are running in a strictly isolated single-skill session.",
     `Active skill name: ${skill.name}`,
     skill.description ? `Active skill description: ${skill.description}` : null,
+    "Do not introduce yourself unless the user explicitly asks who you are.",
+    "Any first-person statements inside the skill content define the assistant persona, not the user identity.",
+    "Never infer or claim the user's name or identity from skill content alone.",
+    "You may reference the user's name only if the user explicitly states it in this conversation.",
+    "If asked for the user's name without explicit in-conversation evidence, say you don't know and ask the user to provide it.",
+    "For identity questions (e.g., 'who are you'), answer as the active skill persona defined in the Active Skill Specification.",
+    "Do not identify yourself as Claude Code, Anthropic CLI, or any platform/tool by default.",
+    "Never output boilerplate introductions like 'I am Claude Code...' unless the user explicitly asks about runtime or platform details.",
     "You must only use the active skill specification below.",
     "Do not rely on any external or unrelated skill definitions.",
     "",
@@ -257,14 +265,13 @@ export async function POST(request: Request) {
         options: {
           cwd: runtime.cwd,
           model: parsedBody.modelConfig.model,
-          settingSources: [],
-          systemPrompt: {
-            type: "preset",
-            preset: "claude_code",
-            append: skillSystemPrompt,
-          },
-          allowedTools: ["Read", "Write", "Edit", "MultiEdit", "Glob", "Grep", "LS", "Bash"],
-          disallowedTools: ["Skill"],
+          // Load only project-level settings/skills from the isolated runtime cwd:
+          // .runtime/sessions/<sessionId>/.claude/skills/active/SKILL.md
+          settingSources: ["project"],
+          // Use a fully custom system prompt to avoid preset identity bias
+          // (e.g. "I am Claude Code...").
+          systemPrompt: skillSystemPrompt,
+          allowedTools: ["Read", "Write", "Edit", "MultiEdit", "Glob", "Grep", "LS", "Bash", "Skill"],
           permissionMode: "dontAsk",
           includePartialMessages: true,
           plugins: [],
@@ -293,19 +300,25 @@ export async function POST(request: Request) {
               });
 
               const input = toRecord(contentBlock.input);
-              writer.write({
-                type: "tool_start",
-                toolUseId: contentBlock.id,
-                toolName: contentBlock.name,
-                toolInput: input,
-                timestamp: Date.now(),
-              });
-              startedToolUseIds.add(contentBlock.id);
+              const existing = toolCallsForStorage.get(contentBlock.id);
+
+              if (!startedToolUseIds.has(contentBlock.id)) {
+                writer.write({
+                  type: "tool_start",
+                  toolUseId: contentBlock.id,
+                  toolName: contentBlock.name,
+                  toolInput: input,
+                  timestamp: Date.now(),
+                });
+                startedToolUseIds.add(contentBlock.id);
+              }
+
               toolCallsForStorage.set(contentBlock.id, {
                 id: contentBlock.id,
                 name: contentBlock.name,
                 input,
-                status: "running",
+                status: existing?.status ?? "running",
+                result: existing?.result,
               });
             }
           } else if (event.type === "content_block_delta") {
@@ -367,6 +380,12 @@ export async function POST(request: Request) {
         }
 
         if (sdkMessage.type === "tool_progress") {
+          // Ignore nested tool progress (e.g. Read inside Task) to avoid
+          // creating orphan running states without matching tool_result.
+          if (sdkMessage.parent_tool_use_id !== null) {
+            continue;
+          }
+
           if (!startedToolUseIds.has(sdkMessage.tool_use_id)) {
             writer.write({
               type: "tool_start",
@@ -429,6 +448,16 @@ export async function POST(request: Request) {
         writer.write({ type: "complete", timestamp: Date.now() });
       }
 
+      for (const [toolUseId, value] of toolCallsForStorage.entries()) {
+        if (value.status === "running") {
+          toolCallsForStorage.set(toolUseId, {
+            ...value,
+            status: "completed",
+            result: value.result ?? "Tool execution finished.",
+          });
+        }
+      }
+
       await prisma.message.create({
         data: {
           sessionId: session.id,
@@ -453,10 +482,8 @@ export async function POST(request: Request) {
     } finally {
       writer.close();
     }
-  })().catch((error: unknown) => {
-    const message = error instanceof Error ? error.message : "Unknown error";
-    writer.write({ type: "error", error: message, timestamp: Date.now() });
-    writer.close();
+  })().catch(() => {
+    // Inner try/catch/finally already reports and closes the stream.
   });
 
   return new Response(stream, {

@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Heart, MessageCircle } from "lucide-react";
+import { Copy, Heart, MessageCircle } from "lucide-react";
 import { toast } from "sonner";
 import { MainNav } from "@/components/app/main-nav";
 import { Button } from "@/components/ui/button";
@@ -100,10 +100,15 @@ export default function PlazaPage() {
     }
   };
 
+  const copyShareLink = async (shareSlug: string) => {
+    const url = `${window.location.origin}/s/${shareSlug}`;
+    await navigator.clipboard.writeText(url);
+    toast.success("分享链接已复制");
+  };
+
   return (
     <div className="min-h-screen p-6 space-y-6">
-      <div className="flex items-center justify-between gap-4 flex-wrap">
-        <h1 className="text-2xl font-bold">Skill广场</h1>
+      <div className="flex justify-center">
         <MainNav />
       </div>
 
@@ -115,7 +120,6 @@ export default function PlazaPage() {
         <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
           {skills.map((skill) => {
             const busy = pendingSkillId === skill.id;
-            const shareUrl = `${typeof window !== "undefined" ? window.location.origin : ""}/s/${skill.shareSlug}`;
 
             return (
               <Card key={skill.id}>
@@ -160,9 +164,16 @@ export default function PlazaPage() {
                       <MessageCircle className="h-4 w-4 mr-1" />
                       对话
                     </Button>
+                    <Button
+                      size="icon"
+                      variant="outline"
+                      onClick={() => copyShareLink(skill.shareSlug)}
+                      disabled={busy}
+                      title="复制分享链接"
+                    >
+                      <Copy className="h-4 w-4" />
+                    </Button>
                   </div>
-
-                  <div className="text-xs text-muted-foreground break-all">分享链接: {shareUrl}</div>
                 </CardHeader>
               </Card>
             );
