@@ -55,6 +55,51 @@ function parseJsonRecord(raw: string): Record<string, unknown> {
   }
 }
 
+interface ParsedToolResult {
+  toolUseId: string;
+  result: string;
+  isError: boolean;
+}
+
+function stringifyToolResultContent(content: unknown): string {
+  if (content === undefined || content === null) {
+    return "";
+  }
+
+  if (typeof content === "string") {
+    return content;
+  }
+
+  if (Array.isArray(content)) {
+    const textParts: string[] = [];
+    for (const item of content) {
+      if (!item || typeof item !== "object") continue;
+      const block = item as Record<string, unknown>;
+      if (block.type === "text" && typeof block.text === "string") {
+        textParts.push(block.text);
+      }
+    }
+    if (textParts.length > 0) {
+      return textParts.join("\n");
+    }
+  }
+
+  return stringifyUnknown(content);
+}
+
+function pushUniqueToolResult(
+  results: ParsedToolResult[],
+  seen: Set<string>,
+  value: ParsedToolResult
+): void {
+  const key = `${value.toolUseId}\u0000${value.isError ? "1" : "0"}\u0000${value.result}`;
+  if (seen.has(key)) {
+    return;
+  }
+  seen.add(key);
+  results.push(value);
+}
+
 function extractUsage(sdkMessage: SDKMessage): TokenUsage | undefined {
   if (sdkMessage.type !== "result") {
     return undefined;
@@ -71,29 +116,56 @@ function extractUsage(sdkMessage: SDKMessage): TokenUsage | undefined {
   };
 }
 
-function extractToolResult(
-  sdkMessage: SDKMessage
-): { toolUseId: string; result: string; isError: boolean } | null {
-  if (
-    sdkMessage.type !== "user" ||
-    !sdkMessage.parent_tool_use_id ||
-    sdkMessage.tool_use_result === undefined
-  ) {
-    return null;
+function extractToolResults(sdkMessage: SDKMessage): ParsedToolResult[] {
+  if (sdkMessage.type !== "user") {
+    return [];
   }
 
-  const toolResult = sdkMessage.tool_use_result;
-  const isError =
-    typeof toolResult === "object" &&
-    toolResult !== null &&
-    "is_error" in toolResult &&
-    (toolResult as { is_error?: unknown }).is_error === true;
+  const results: ParsedToolResult[] = [];
+  const seen = new Set<string>();
 
-  return {
-    toolUseId: sdkMessage.parent_tool_use_id,
-    result: stringifyUnknown(toolResult),
-    isError,
-  };
+  if (sdkMessage.parent_tool_use_id && sdkMessage.tool_use_result !== undefined) {
+    const rawResult = sdkMessage.tool_use_result;
+    const isError =
+      typeof rawResult === "object" &&
+      rawResult !== null &&
+      "is_error" in rawResult &&
+      (rawResult as { is_error?: unknown }).is_error === true;
+    const resultContent =
+      typeof rawResult === "object" &&
+      rawResult !== null &&
+      "content" in rawResult
+        ? (rawResult as { content?: unknown }).content
+        : rawResult;
+
+    pushUniqueToolResult(results, seen, {
+      toolUseId: sdkMessage.parent_tool_use_id,
+      result: stringifyToolResultContent(resultContent),
+      isError,
+    });
+  }
+
+  const contentBlocks = Array.isArray(sdkMessage.message.content) ? sdkMessage.message.content : [];
+  for (const block of contentBlocks) {
+    if (!block || typeof block !== "object") {
+      continue;
+    }
+    const record = block as unknown as Record<string, unknown>;
+    if (record.type !== "tool_result") {
+      continue;
+    }
+    if (typeof record.tool_use_id !== "string") {
+      continue;
+    }
+
+    pushUniqueToolResult(results, seen, {
+      toolUseId: record.tool_use_id,
+      result: stringifyToolResultContent(record.content),
+      isError: record.is_error === true,
+    });
+  }
+
+  return results;
 }
 
 function buildPromptFromHistory(
@@ -405,23 +477,33 @@ export async function POST(request: Request) {
           continue;
         }
 
-        const toolResult = extractToolResult(sdkMessage);
-        if (toolResult) {
-          writer.write({
-            type: "tool_result",
-            toolUseId: toolResult.toolUseId,
-            result: toolResult.result,
-            isError: toolResult.isError,
-            timestamp: Date.now(),
-          });
-
-          const existing = toolCallsForStorage.get(toolResult.toolUseId);
-          if (existing) {
-            toolCallsForStorage.set(toolResult.toolUseId, {
-              ...existing,
-              status: toolResult.isError ? "error" : "completed",
+        const toolResults = extractToolResults(sdkMessage);
+        if (toolResults.length > 0) {
+          for (const toolResult of toolResults) {
+            writer.write({
+              type: "tool_result",
+              toolUseId: toolResult.toolUseId,
               result: toolResult.result,
+              isError: toolResult.isError,
+              timestamp: Date.now(),
             });
+
+            const existing = toolCallsForStorage.get(toolResult.toolUseId);
+            if (existing) {
+              toolCallsForStorage.set(toolResult.toolUseId, {
+                ...existing,
+                status: toolResult.isError ? "error" : "completed",
+                result: toolResult.result,
+              });
+            } else {
+              toolCallsForStorage.set(toolResult.toolUseId, {
+                id: toolResult.toolUseId,
+                name: "Tool",
+                input: {},
+                status: toolResult.isError ? "error" : "completed",
+                result: toolResult.result,
+              });
+            }
           }
           continue;
         }
@@ -453,7 +535,6 @@ export async function POST(request: Request) {
           toolCallsForStorage.set(toolUseId, {
             ...value,
             status: "completed",
-            result: value.result ?? "Tool execution finished.",
           });
         }
       }

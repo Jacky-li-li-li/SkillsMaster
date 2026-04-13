@@ -107,13 +107,47 @@ function buildSessionPreview(content: string): string | null {
   return trimmed ? trimmed.slice(0, 120) : null;
 }
 
+const SIDEBAR_COLLAPSED_STORAGE_KEY = "skill.sessions.sidebar.collapsed";
+const GROUP_EXPANDED_STORAGE_KEY = "skill.sessions.groups.expanded";
+
+function readSidebarCollapsedFromStorage(): boolean {
+  if (typeof window === "undefined") return false;
+  return window.localStorage.getItem(SIDEBAR_COLLAPSED_STORAGE_KEY) === "1";
+}
+
+function readGroupExpandedStateFromStorage(): Record<string, boolean> {
+  if (typeof window === "undefined") return {};
+
+  try {
+    const raw = window.localStorage.getItem(GROUP_EXPANDED_STORAGE_KEY);
+    if (!raw) return {};
+
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return {};
+    }
+
+    const normalized: Record<string, boolean> = {};
+    for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+      if (typeof value === "boolean") {
+        normalized[key] = value;
+      }
+    }
+    return normalized;
+  } catch {
+    return {};
+  }
+}
+
 interface SessionSidebarProps {
   groups: SessionGroup[];
   loadingGroups: boolean;
   selectedSessionId: string | null;
   creatingSkillId: string | null;
+  groupExpandedState: Record<string, boolean>;
   onCreateSession: (skillId: string) => void;
   onSelectSession: (sessionId: string) => void;
+  onGroupExpandedChange: (skillId: string, isExpanded: boolean) => void;
 }
 
 const SessionSidebar = memo(function SessionSidebar({
@@ -121,8 +155,10 @@ const SessionSidebar = memo(function SessionSidebar({
   loadingGroups,
   selectedSessionId,
   creatingSkillId,
+  groupExpandedState,
   onCreateSession,
   onSelectSession,
+  onGroupExpandedChange,
 }: SessionSidebarProps) {
   return (
     <div className="border rounded-lg min-h-0 overflow-hidden flex flex-col">
@@ -132,50 +168,58 @@ const SessionSidebar = memo(function SessionSidebar({
         ) : groups.length === 0 ? (
           <div className="text-sm text-muted-foreground">暂无会话，请从广场发起对话</div>
         ) : (
-          groups.map((group) => (
-            <details key={group.skill.id} open className="group rounded-md border p-2">
-              <summary className="list-none cursor-pointer rounded-md bg-muted/60 px-2 py-2 text-sm font-medium [&::-webkit-details-marker]:hidden">
-                <div className="flex items-center gap-1.5">
-                  <ChevronRight className="size-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-90" />
-                  <span className="text-[11px] uppercase tracking-wide text-muted-foreground">Skill</span>
-                  <span className="truncate">
-                    {group.skill.icon ? `${group.skill.icon} ` : ""}
-                    {group.skill.name}
-                  </span>
-                  {group.skill.status !== "published" && (
-                    <span className="ml-auto text-xs text-muted-foreground">已下架</span>
-                  )}
-                </div>
-              </summary>
-              <div className="mt-2 ml-2 border-l pl-2 space-y-1">
-                <button
-                  type="button"
-                  className="h-10 w-full rounded-md border border-dashed px-2 text-sm font-medium text-left flex items-center gap-1.5 hover:bg-muted disabled:opacity-50 disabled:cursor-not-allowed"
-                  onClick={() => onCreateSession(group.skill.id)}
-                  disabled={creatingSkillId !== null || group.skill.status !== "published"}
-                >
-                  <Plus className="size-4 shrink-0" />
-                  {creatingSkillId === group.skill.id ? "新建中..." : "新建会话"}
-                </button>
-
-                {group.sessions.map((session) => (
+          groups.map((group) => {
+            const isExpanded = groupExpandedState[group.skill.id] ?? true;
+            return (
+              <details
+                key={group.skill.id}
+                open={isExpanded}
+                className="group rounded-md border p-2"
+                onToggle={(event) => onGroupExpandedChange(group.skill.id, event.currentTarget.open)}
+              >
+                <summary className="list-none cursor-pointer rounded-md bg-muted/60 px-2 py-2 text-sm font-medium [&::-webkit-details-marker]:hidden">
+                  <div className="flex items-center gap-1.5">
+                    <ChevronRight className="size-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-90" />
+                    <span className="text-[11px] uppercase tracking-wide text-muted-foreground">Skill</span>
+                    <span className="truncate">
+                      {group.skill.icon ? `${group.skill.icon} ` : ""}
+                      {group.skill.name}
+                    </span>
+                    {group.skill.status !== "published" && (
+                      <span className="ml-auto text-xs text-muted-foreground">已下架</span>
+                    )}
+                  </div>
+                </summary>
+                <div className="mt-2 ml-2 border-l pl-2 space-y-1">
                   <button
-                    key={session.id}
                     type="button"
-                    className={`h-10 w-full text-left rounded-md px-2 text-sm border transition ${
-                      selectedSessionId === session.id
-                        ? "bg-primary text-primary-foreground border-primary"
-                        : "border-border/80 hover:bg-muted"
-                    }`}
-                    onClick={() => onSelectSession(session.id)}
-                    title={session.title}
+                    className="h-10 w-full rounded-md border border-dashed px-2 text-sm font-medium text-left flex items-center gap-1.5 hover:bg-muted disabled:opacity-50 disabled:cursor-not-allowed"
+                    onClick={() => onCreateSession(group.skill.id)}
+                    disabled={creatingSkillId !== null || group.skill.status !== "published"}
                   >
-                    <span className="font-medium truncate block">{session.title}</span>
+                    <Plus className="size-4 shrink-0" />
+                    {creatingSkillId === group.skill.id ? "新建中..." : "新建会话"}
                   </button>
-                ))}
-              </div>
-            </details>
-          ))
+
+                  {group.sessions.map((session) => (
+                    <button
+                      key={session.id}
+                      type="button"
+                      className={`h-10 w-full text-left rounded-md px-2 text-sm border transition ${
+                        selectedSessionId === session.id
+                          ? "bg-primary text-primary-foreground border-primary"
+                          : "border-border/80 hover:bg-muted"
+                      }`}
+                      onClick={() => onSelectSession(session.id)}
+                      title={session.title}
+                    >
+                      <span className="font-medium truncate block">{session.title}</span>
+                    </button>
+                  ))}
+                </div>
+              </details>
+            );
+          })
         )}
       </div>
     </div>
@@ -193,13 +237,52 @@ export default function SessionsPage() {
   const [loadingGroups, setLoadingGroups] = useState(true);
   const [loadingMessages, setLoadingMessages] = useState(false);
   const [isStreaming, setIsStreaming] = useState(false);
-  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState<boolean>(() =>
+    readSidebarCollapsedFromStorage()
+  );
+  const [groupExpandedState, setGroupExpandedState] = useState<Record<string, boolean>>(() =>
+    readGroupExpandedStateFromStorage()
+  );
   const [creatingSkillId, setCreatingSkillId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [activeModelConfig, setActiveModelConfig] = useState<ReturnType<typeof getActiveModelConfig>>(null);
 
   useEffect(() => {
     setActiveModelConfig(getActiveModelConfig(loadModelConfigs()));
+  }, []);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(
+        SIDEBAR_COLLAPSED_STORAGE_KEY,
+        isSidebarCollapsed ? "1" : "0"
+      );
+    } catch {
+      // ignore storage write errors
+    }
+  }, [isSidebarCollapsed]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(
+        GROUP_EXPANDED_STORAGE_KEY,
+        JSON.stringify(groupExpandedState)
+      );
+    } catch {
+      // ignore storage write errors
+    }
+  }, [groupExpandedState]);
+
+  const handleGroupExpandedChange = useCallback((skillId: string, isExpanded: boolean) => {
+    setGroupExpandedState((prev) => {
+      if (prev[skillId] === isExpanded) {
+        return prev;
+      }
+      return {
+        ...prev,
+        [skillId]: isExpanded,
+      };
+    });
   }, []);
 
   const fetchGroups = useCallback(async (options?: { silent?: boolean }) => {
@@ -426,17 +509,13 @@ export default function SessionsPage() {
       commitAssistantUpdate();
     };
 
-    const settleRunningToolCalls = (
-      status: "completed" | "error",
-      fallbackResult: string
-    ) => {
+    const settleRunningToolCalls = (status: "completed" | "error") => {
       let changed = false;
       for (const [toolUseId, toolCall] of toolCalls.entries()) {
         if (toolCall.status === "running") {
           toolCalls.set(toolUseId, {
             ...toolCall,
             status,
-            result: toolCall.result ?? fallbackResult,
           });
           changed = true;
         }
@@ -500,19 +579,19 @@ export default function SessionsPage() {
               queueAssistantUpdate();
             } else if (event.type === "tool_result") {
               const existing = toolCalls.get(event.toolUseId);
-              if (existing) {
-                toolCalls.set(event.toolUseId, {
-                  ...existing,
-                  status: event.isError ? "error" : "completed",
-                  result: event.result,
-                });
-                queueAssistantUpdate();
-              }
+              toolCalls.set(event.toolUseId, {
+                id: event.toolUseId,
+                name: existing?.name ?? "Tool",
+                input: existing?.input ?? {},
+                status: event.isError ? "error" : "completed",
+                result: event.result,
+              });
+              queueAssistantUpdate();
             } else if (event.type === "complete") {
-              settleRunningToolCalls("completed", "Tool execution finished.");
+              settleRunningToolCalls("completed");
             } else if (event.type === "error") {
               setError(event.error);
-              settleRunningToolCalls("error", event.error);
+              settleRunningToolCalls("error");
             }
           } catch {
             // ignore parse errors
@@ -554,8 +633,10 @@ export default function SessionsPage() {
             loadingGroups={loadingGroups}
             selectedSessionId={selectedSessionId}
             creatingSkillId={creatingSkillId}
+            groupExpandedState={groupExpandedState}
             onCreateSession={handleCreateSession}
             onSelectSession={handleSelectSession}
+            onGroupExpandedChange={handleGroupExpandedChange}
           />
         )}
 
