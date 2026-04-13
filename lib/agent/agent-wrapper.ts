@@ -1,7 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type { Tool, MessageParam, ToolResultBlockParam } from "@anthropic-ai/sdk/resources/messages";
 import type { AgentEvent, TokenUsage } from "./event-types";
-import type { LoadedSkill } from "../skills/types";
 import { DEFAULT_BASE_URL } from "../constants";
 import { evaluateMathExpression } from "./safe-math";
 
@@ -14,6 +13,14 @@ export interface HistoryMessage {
 
 export interface FileContent {
   name: string;
+  content: string;
+}
+
+export interface LoadedSkill {
+  metadata: {
+    name: string;
+    description?: string;
+  };
   content: string;
 }
 

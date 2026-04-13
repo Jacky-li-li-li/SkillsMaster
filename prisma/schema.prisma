@@ -1,0 +1,102 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum SkillStatus {
+  draft
+  published
+  unpublished
+}
+
+enum SessionStatus {
+  active
+  archived
+}
+
+enum MessageRole {
+  user
+  assistant
+  system
+}
+
+model User {
+  id            String      @id @default(cuid())
+  localClientId String      @unique
+  displayName   String
+  avatarUrl     String?
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  skills        Skill[]
+  sessions      Session[]
+  likes         SkillLike[]
+}
+
+model Skill {
+  id              String       @id @default(cuid())
+  authorId        String
+  name            String
+  slug            String
+  description     String?
+  contentMarkdown String
+  icon            String?
+  status          SkillStatus  @default(draft)
+  shareSlug       String       @unique
+  publishedAt     DateTime?
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+
+  author          User         @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  likes           SkillLike[]
+  sessions        Session[]
+
+  @@index([authorId, updatedAt])
+  @@index([status, updatedAt])
+}
+
+model SkillLike {
+  userId    String
+  skillId   String
+  createdAt DateTime @default(now())
+
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  skill     Skill    @relation(fields: [skillId], references: [id], onDelete: Cascade)
+
+  @@id([userId, skillId])
+  @@index([skillId])
+}
+
+model Session {
+  id        String        @id @default(cuid())
+  userId    String
+  skillId   String
+  title     String
+  status    SessionStatus @default(active)
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+
+  user      User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  skill     Skill         @relation(fields: [skillId], references: [id], onDelete: Restrict)
+  messages  Message[]
+
+  @@index([userId, updatedAt])
+  @@index([skillId, updatedAt])
+}
+
+model Message {
+  id           String      @id @default(cuid())
+  sessionId    String
+  role         MessageRole
+  content      String
+  toolCallsJson Json?
+  createdAt    DateTime    @default(now())
+
+  session      Session     @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId, createdAt])
+}

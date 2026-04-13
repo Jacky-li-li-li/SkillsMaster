@@ -1,84 +1,58 @@
 import { query, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
+import { Prisma } from "@prisma/client";
+import { z } from "zod";
 import { createSSEStream } from "@/lib/agent/stream-encoder";
 import type { TokenUsage } from "@/lib/agent/event-types";
+import { DEFAULT_BASE_URL } from "@/lib/constants";
+import { prisma } from "@/lib/db/prisma";
+import { getOrCreateUserFromRequest } from "@/lib/server/local-user";
+import { prepareSessionRuntimeSkill } from "@/lib/server/skill-runtime";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-interface HistoryMessage {
-  role: "user" | "assistant";
-  content: string;
-}
-
-interface FileContent {
-  name: string;
-  content: string;
-}
-
-interface ChatRequest {
-  message: string;
-  history?: HistoryMessage[];
-  files?: FileContent[];
-  apiKey: string;
-  baseURL?: string;
-  model?: string;
-}
+const AgentRequestSchema = z.object({
+  sessionId: z.string().cuid(),
+  message: z.string().trim().min(1).max(200_000),
+  modelConfig: z.object({
+    model: z.string().trim().min(1).max(120),
+    apiKey: z.string().trim().min(1),
+    baseURL: z.string().trim().url().optional(),
+  }),
+});
 
 function generateId(): string {
   return Math.random().toString(36).substring(2, 15);
 }
 
-function buildPrompt(
-  message: string,
-  history?: HistoryMessage[],
-  files?: FileContent[]
-): string {
-  const sections: string[] = [];
-
-  if (history?.length) {
-    const historyText = history
-      .map((item) => `${item.role === "user" ? "User" : "Assistant"}: ${item.content}`)
-      .join("\n\n");
-    sections.push(`Conversation History:\n${historyText}`);
+function stringifyUnknown(value: unknown): string {
+  if (typeof value === "string") {
+    return value;
   }
 
-  if (files?.length) {
-    const filesText = files
-      .map((file) => `File: ${file.name}\n\`\`\`\n${file.content}\n\`\`\``)
-      .join("\n\n");
-    sections.push(`User Files:\n${filesText}`);
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
   }
-
-  sections.push(`User Request:\n${message}`);
-  return sections.join("\n\n---\n\n");
 }
 
-function extractAssistantText(sdkMessage: SDKMessage): string {
-  if (sdkMessage.type !== "assistant") {
-    return "";
+function toRecord(value: unknown): Record<string, unknown> {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
   }
+  return {};
+}
 
-  const contentBlocks = sdkMessage.message.content;
-  if (!Array.isArray(contentBlocks)) {
-    return "";
+function parseJsonRecord(raw: string): Record<string, unknown> {
+  const trimmed = raw.trim();
+  if (!trimmed) return {};
+
+  try {
+    return toRecord(JSON.parse(trimmed));
+  } catch {
+    return { _raw: raw };
   }
-
-  const textParts: string[] = [];
-  for (const block of contentBlocks) {
-    if (
-      typeof block === "object" &&
-      block !== null &&
-      "type" in block &&
-      block.type === "text"
-    ) {
-      const maybeText = (block as { text?: unknown }).text;
-      if (typeof maybeText === "string") {
-        textParts.push(maybeText);
-      }
-    }
-  }
-
-  return textParts.join("");
 }
 
 function extractUsage(sdkMessage: SDKMessage): TokenUsage | undefined {
@@ -95,38 +69,6 @@ function extractUsage(sdkMessage: SDKMessage): TokenUsage | undefined {
     outputTokens,
     totalTokens: inputTokens + outputTokens,
   };
-}
-
-function toRecord(value: unknown): Record<string, unknown> {
-  if (value && typeof value === "object" && !Array.isArray(value)) {
-    return value as Record<string, unknown>;
-  }
-  return {};
-}
-
-function parseToolInput(partialJson: string): Record<string, unknown> {
-  const trimmed = partialJson.trim();
-  if (!trimmed) {
-    return {};
-  }
-
-  try {
-    return toRecord(JSON.parse(trimmed));
-  } catch {
-    return { _raw: partialJson };
-  }
-}
-
-function stringifyUnknown(value: unknown): string {
-  if (typeof value === "string") {
-    return value;
-  }
-
-  try {
-    return JSON.stringify(value, null, 2);
-  } catch {
-    return String(value);
-  }
 }
 
 function extractToolResult(
@@ -154,55 +96,185 @@ function extractToolResult(
   };
 }
 
-export async function POST(request: Request) {
-  const body = (await request.json()) as ChatRequest;
+function buildPromptFromHistory(
+  history: Array<{ role: "user" | "assistant" | "system"; content: string }>,
+  incomingMessage: string
+): string {
+  const historyText = history
+    .map((item) => {
+      const roleLabel =
+        item.role === "user" ? "User" : item.role === "assistant" ? "Assistant" : "System";
+      return `${roleLabel}: ${item.content}`;
+    })
+    .join("\n\n");
 
-  if (!body.message || !body.apiKey) {
+  return `Conversation History:\n${historyText}\n\n---\n\nUser Request:\n${incomingMessage}`;
+}
+
+function buildSkillSystemPromptAppend(skill: {
+  name: string;
+  description: string | null;
+  contentMarkdown: string;
+}): string {
+  return [
+    "You are running in a strictly isolated single-skill session.",
+    `Active skill name: ${skill.name}`,
+    skill.description ? `Active skill description: ${skill.description}` : null,
+    "You must only use the active skill specification below.",
+    "Do not rely on any external or unrelated skill definitions.",
+    "",
+    "## Active Skill Specification",
+    skill.contentMarkdown,
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+export async function POST(request: Request) {
+  let parsedBody: z.infer<typeof AgentRequestSchema>;
+
+  try {
+    const body = await request.json();
+    const parsed = AgentRequestSchema.safeParse(body);
+    if (!parsed.success) {
+      return new Response(
+        JSON.stringify({ error: parsed.error.issues[0]?.message ?? "Invalid request body" }),
+        { status: 400, headers: { "Content-Type": "application/json" } }
+      );
+    }
+    parsedBody = parsed.data;
+  } catch {
+    return new Response(JSON.stringify({ error: "Invalid request body" }), {
+      status: 400,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+
+  let userId: string;
+  try {
+    const user = await getOrCreateUserFromRequest(request);
+    userId = user.id;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unauthorized";
+    return new Response(JSON.stringify({ error: message }), {
+      status: 400,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+
+  const session = await prisma.session.findFirst({
+    where: {
+      id: parsedBody.sessionId,
+      userId,
+    },
+    include: {
+      skill: {
+        select: {
+          id: true,
+          name: true,
+          description: true,
+          contentMarkdown: true,
+          icon: true,
+          status: true,
+        },
+      },
+      messages: {
+        orderBy: { createdAt: "asc" },
+        select: {
+          role: true,
+          content: true,
+        },
+      },
+    },
+  });
+
+  if (!session) {
+    return new Response(JSON.stringify({ error: "Session not found" }), {
+      status: 404,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+
+  if (session.skill.status !== "published") {
     return new Response(
-      JSON.stringify({ error: "Missing message or apiKey" }),
-      { status: 400, headers: { "Content-Type": "application/json" } }
+      JSON.stringify({ error: "该 skill 已下架/删除，无法继续会话" }),
+      {
+        status: 409,
+        headers: { "Content-Type": "application/json" },
+      }
     );
   }
+
+  await prisma.message.create({
+    data: {
+      sessionId: session.id,
+      role: "user",
+      content: parsedBody.message,
+    },
+  });
+  await prisma.session.update({
+    where: { id: session.id },
+    data: {
+      title:
+        session.messages.length === 0
+          ? parsedBody.message.slice(0, 48)
+          : undefined,
+    },
+  });
 
   const { stream, writer } = createSSEStream();
   const turnId = generateId();
 
-  const settingSources = ["user", "project"] as const;
-  const allowedTools = [
-    "Skill",
-    "Read",
-    "Write",
-    "Edit",
-    "MultiEdit",
-    "Glob",
-    "Grep",
-    "LS",
-    "Bash",
-  ];
-
   (async () => {
     let completed = false;
     let sawPartialMessages = false;
+    let assistantContent = "";
     const toolMetaByIndex = new Map<number, { id: string; name: string }>();
     const partialToolInputByIndex = new Map<number, string>();
     const startedToolUseIds = new Set<string>();
+    const toolCallsForStorage = new Map<
+      string,
+      { id: string; name: string; input: Record<string, unknown>; status: "running" | "completed" | "error"; result?: string }
+    >();
 
     try {
-      const prompt = buildPrompt(body.message, body.history, body.files);
+      const runtime = await prepareSessionRuntimeSkill(session.id, {
+        name: session.skill.name,
+        description: session.skill.description,
+        contentMarkdown: session.skill.contentMarkdown,
+        icon: session.skill.icon,
+      });
+
+      const prompt = buildPromptFromHistory(session.messages, parsedBody.message);
+      const skillSystemPrompt = buildSkillSystemPromptAppend({
+        name: session.skill.name,
+        description: session.skill.description,
+        contentMarkdown: session.skill.contentMarkdown,
+      });
 
       const sdkQuery = query({
         prompt,
         options: {
-          cwd: process.cwd(),
-          model: body.model,
-          settingSources: [...settingSources],
-          allowedTools,
+          cwd: runtime.cwd,
+          model: parsedBody.modelConfig.model,
+          settingSources: [],
+          systemPrompt: {
+            type: "preset",
+            preset: "claude_code",
+            append: skillSystemPrompt,
+          },
+          allowedTools: ["Read", "Write", "Edit", "MultiEdit", "Glob", "Grep", "LS", "Bash"],
+          disallowedTools: ["Skill"],
           permissionMode: "dontAsk",
           includePartialMessages: true,
+          plugins: [],
+          settings: {
+            enabledPlugins: {},
+          },
           env: {
             ...process.env,
-            ANTHROPIC_API_KEY: body.apiKey,
-            ...(body.baseURL ? { ANTHROPIC_BASE_URL: body.baseURL } : {}),
+            ANTHROPIC_API_KEY: parsedBody.modelConfig.apiKey,
+            ANTHROPIC_BASE_URL: parsedBody.modelConfig.baseURL || DEFAULT_BASE_URL,
           },
         },
       });
@@ -220,18 +292,26 @@ export async function POST(request: Request) {
                 name: contentBlock.name,
               });
 
+              const input = toRecord(contentBlock.input);
               writer.write({
                 type: "tool_start",
                 toolUseId: contentBlock.id,
                 toolName: contentBlock.name,
-                toolInput: toRecord(contentBlock.input),
+                toolInput: input,
                 timestamp: Date.now(),
               });
               startedToolUseIds.add(contentBlock.id);
+              toolCallsForStorage.set(contentBlock.id, {
+                id: contentBlock.id,
+                name: contentBlock.name,
+                input,
+                status: "running",
+              });
             }
           } else if (event.type === "content_block_delta") {
             const delta = event.delta;
             if (delta.type === "text_delta" && delta.text) {
+              assistantContent += delta.text;
               writer.write({
                 type: "text_delta",
                 delta: delta.text,
@@ -246,14 +326,15 @@ export async function POST(request: Request) {
             const toolMeta = toolMetaByIndex.get(event.index);
             const partialInput = partialToolInputByIndex.get(event.index);
             if (toolMeta && partialInput) {
-              writer.write({
-                type: "tool_start",
-                toolUseId: toolMeta.id,
-                toolName: toolMeta.name,
-                toolInput: parseToolInput(partialInput),
-                timestamp: Date.now(),
+              const input = parseJsonRecord(partialInput);
+              const existing = toolCallsForStorage.get(toolMeta.id);
+              toolCallsForStorage.set(toolMeta.id, {
+                id: toolMeta.id,
+                name: toolMeta.name,
+                input,
+                status: existing?.status ?? "running",
+                result: existing?.result,
               });
-              startedToolUseIds.add(toolMeta.id);
             }
 
             toolMetaByIndex.delete(event.index);
@@ -265,8 +346,15 @@ export async function POST(request: Request) {
 
         if (sdkMessage.type === "assistant") {
           if (!sawPartialMessages) {
-            const text = extractAssistantText(sdkMessage);
+            const textParts: string[] = [];
+            for (const block of sdkMessage.message.content) {
+              if (block.type === "text") {
+                textParts.push(block.text);
+              }
+            }
+            const text = textParts.join("");
             if (text) {
+              assistantContent += text;
               writer.write({
                 type: "text_delta",
                 delta: text,
@@ -288,6 +376,12 @@ export async function POST(request: Request) {
               timestamp: Date.now(),
             });
             startedToolUseIds.add(sdkMessage.tool_use_id);
+            toolCallsForStorage.set(sdkMessage.tool_use_id, {
+              id: sdkMessage.tool_use_id,
+              name: sdkMessage.tool_name,
+              input: {},
+              status: "running",
+            });
           }
           continue;
         }
@@ -301,6 +395,15 @@ export async function POST(request: Request) {
             isError: toolResult.isError,
             timestamp: Date.now(),
           });
+
+          const existing = toolCallsForStorage.get(toolResult.toolUseId);
+          if (existing) {
+            toolCallsForStorage.set(toolResult.toolUseId, {
+              ...existing,
+              status: toolResult.isError ? "error" : "completed",
+              result: toolResult.result,
+            });
+          }
           continue;
         }
 
@@ -322,17 +425,24 @@ export async function POST(request: Request) {
       }
 
       if (!completed) {
-        writer.write({
-          type: "text_complete",
-          turnId,
-          timestamp: Date.now(),
-        });
-
-        writer.write({
-          type: "complete",
-          timestamp: Date.now(),
-        });
+        writer.write({ type: "text_complete", turnId, timestamp: Date.now() });
+        writer.write({ type: "complete", timestamp: Date.now() });
       }
+
+      await prisma.message.create({
+        data: {
+          sessionId: session.id,
+          role: "assistant",
+          content: assistantContent,
+          toolCallsJson: Array.from(toolCallsForStorage.values()) as unknown as Prisma.InputJsonValue,
+        },
+      });
+      await prisma.session.update({
+        where: { id: session.id },
+        data: {
+          updatedAt: new Date(),
+        },
+      });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown error";
       writer.write({
@@ -345,11 +455,7 @@ export async function POST(request: Request) {
     }
   })().catch((error: unknown) => {
     const message = error instanceof Error ? error.message : "Unknown error";
-    writer.write({
-      type: "error",
-      error: message,
-      timestamp: Date.now(),
-    });
+    writer.write({ type: "error", error: message, timestamp: Date.now() });
     writer.close();
   });
 

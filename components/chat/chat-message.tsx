@@ -39,6 +39,30 @@ function hasVisibleContent(text: string): boolean {
   return text.trim().length > 0;
 }
 
+function unwrapEntireMarkdownFence(content: string): string {
+  const trimmed = content.trim();
+  const match = trimmed.match(/^```(?:markdown|md)\s*\n([\s\S]*?)\n```$/i);
+  return match ? match[1] : content;
+}
+
+function normalizeMarkdownOutsideCodeFences(content: string): string {
+  const segments = content.split(/(```[\s\S]*?```)/g);
+  return segments
+    .map((segment, index) => {
+      // odd index segments are fenced code blocks - keep untouched
+      if (index % 2 === 1) return segment;
+      return segment
+        .replace(/\*\*\s+([^*\n][^*\n]*?)\s+\*\*/g, "**$1**")
+        .replace(/__\s+([^_\n][^_\n]*?)\s+__/g, "__$1__");
+    })
+    .join("");
+}
+
+function normalizeMarkdownForRender(content: string): string {
+  const unwrapped = unwrapEntireMarkdownFence(content);
+  return normalizeMarkdownOutsideCodeFences(unwrapped);
+}
+
 function parseToolCallArgs(argsStr: string): Record<string, string> {
   const args: Record<string, string> = {};
   const lines = argsStr.trim().split("\n");
@@ -255,7 +279,11 @@ function MarkdownContent({ content }: { content: string }) {
 }
 
 export function ChatMessage({ role, content, toolCalls, isStreaming }: ChatMessageProps) {
-  const blocks = useMemo(() => parseContent(content), [content]);
+  const renderContent = useMemo(
+    () => (role === "assistant" ? normalizeMarkdownForRender(content) : content),
+    [role, content]
+  );
+  const blocks = useMemo(() => parseContent(renderContent), [renderContent]);
   const [copied, setCopied] = useState(false);
   const copiedTimeoutRef = useRef<number | null>(null);
 
@@ -268,14 +296,14 @@ export function ChatMessage({ role, content, toolCalls, isStreaming }: ChatMessa
   }, []);
 
   const handleCopy = async () => {
-    if (!content) return;
+    if (!renderContent) return;
 
     try {
       if (navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(content);
+        await navigator.clipboard.writeText(renderContent);
       } else {
         const textarea = document.createElement("textarea");
-        textarea.value = content;
+        textarea.value = renderContent;
         textarea.setAttribute("readonly", "");
         textarea.style.position = "fixed";
         textarea.style.opacity = "0";
