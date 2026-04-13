@@ -141,9 +141,15 @@ export default function PlazaPage() {
                       {skill.icon && <span>{skill.icon}</span>}
                       <span className="truncate">{skill.name}</span>
                     </CardTitle>
-                    {skill.description && (
-                      <CardDescription className="line-clamp-2 mt-1">{skill.description}</CardDescription>
-                    )}
+                    <div className="mt-2 min-h-[3.25rem] rounded-md border border-border/70 bg-muted/40 px-2.5 py-2">
+                      <CardDescription
+                        className={`line-clamp-2 whitespace-pre-wrap break-words text-sm leading-5 ${
+                          skill.description ? "" : "italic text-muted-foreground/70"
+                        }`}
+                      >
+                        {skill.description?.trim() || "暂无描述"}
+                      </CardDescription>
+                    </div>
                   </div>
 
                   <div className="flex items-center gap-2">
